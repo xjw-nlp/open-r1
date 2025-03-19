@@ -50,6 +50,10 @@ To run the code in this project, first, create a Python virtual environment usin
 To install `uv`, follow the [UV Installation Guide](https://docs.astral.sh/uv/getting-started/installation/).
 
 
+> [!NOTE]
+> As a shortcut, run `make install` to setup development libraries (spelled out below). Afterwards, if everything is setup correctly you can try out the Open-R1 models.
+
+
 ```shell
 uv venv openr1 --python 3.11 && source openr1/bin/activate && uv pip install --upgrade pip
 ```
@@ -209,6 +213,37 @@ For example, to train a smol model on Python problems, run:
 ACCELERATE_LOG_LEVEL=info accelerate launch --config_file recipes/accelerate_configs/zero2.yaml \
     --num_processes=7 src/open_r1/grpo.py \
     --config recipes/Qwen2.5-1.5B-Instruct/grpo/config_demo_code.yaml
+```
+
+#### Data decontamination
+
+Following [s1: Simple test-time scaling](https://arxiv.org/abs/2501.19393) the data can be decontaminated using the script at: [scripts/decontaminate.py](./scripts/decontaminate.py), which decontaminates a dataset using 8-grams and deduplicate the data. Sample run:
+
+```shell
+python scripts/decontaminate.py \
+    --dataset "open-r1/verifiable-coding-problems-python" \
+    --problem_column problem \
+    --cleanup
+```
+
+It will decontaminate against the benchmark datasets, and remove the contaminated samples afterwards. If no argument `--new_dataset_name` is provided, the same dataset will be reused, adding a `_decontaminated`. It runs against the prompt, which for this dataset is the column `problem`, but a different one can be provided.
+
+Arguments for the script:
+
+```shell
+usage: decontaminate.py [-h] --dataset DATASET [--split SPLIT] [--ngram_size NGRAM_SIZE] [--problem_column PROBLEM_COLUMN] [--cleanup] [--new_dataset_name NEW_DATASET_NAME]
+
+options:
+  -h, --help            show this help message and exit
+  --dataset DATASET     Name of the dataset to check for contamination.
+  --split SPLIT         Split to check for contamination, defaults to `train`.
+  --ngram_size NGRAM_SIZE
+                        Size of n-grams to build, defaults to 8.
+  --problem_column PROBLEM_COLUMN
+                        Name of the column containing the problem (prompt).
+  --cleanup           Whether to remove the contaminated rows before pushing the dataset.
+  --new_dataset_name NEW_DATASET_NAME
+                        New name for the dataset. If not provided, will reuse the name and add a `_decontaminated` to the name.
 ```
 
 ### Launching jobs on a Slurm cluster
@@ -543,3 +578,21 @@ sbatch slurm/generate.slurm \
 ## Contributing
 
 Contributions are welcome. Please refer to https://github.com/huggingface/open-r1/issues/23.
+
+## Acknowledgements
+
+This project is built with the collective efforts of many groups and individuals in the open AI community. We are especially grateful to the vLLM and SGLang teams for creating high-performance tooling to scale the rollouts of GRPO. We also thank the teams at [OpenThoughts](https://www.open-thoughts.ai), [Prime Intellect](https://www.primeintellect.ai), and [General Reasoning](https://gr.inc) for creating and sharing high-quality datasets for reasoning.
+
+## Citation
+
+If you find this project is useful in your own work, please consider citing as follows:
+
+```
+@misc{openr1,
+    title = {Open R1: A fully open reproduction of DeepSeek-R1},
+    url = {https://github.com/huggingface/open-r1},
+    author = {Hugging Face},
+    month = {January},
+    year = {2025}
+}
+```
