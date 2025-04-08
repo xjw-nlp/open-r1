@@ -9,7 +9,7 @@ from typing import Dict
 from latex2sympy2_extended import NormalizationConfig
 from math_verify import LatexExtractionConfig, parse, verify
 
-from .utils import is_e2b_available
+from utils import is_e2b_available
 
 
 if is_e2b_available():

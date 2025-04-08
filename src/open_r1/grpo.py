@@ -17,6 +17,8 @@ import os
 import sys
 from dataclasses import dataclass, field
 
+# sys.path.append('/apdcephfs_qy3/share_1565115/jonxie/workspace/open-r1/rewards')
+
 import datasets
 import torch
 import transformers
@@ -25,7 +27,7 @@ from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 
 from open_r1.configs import GRPOConfig
-from open_r1.rewards import (
+from rewards import (
     accuracy_reward,
     code_reward,
     format_reward,
