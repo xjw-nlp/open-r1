@@ -41,8 +41,8 @@ from rewards import (
 from open_r1.utils import get_tokenizer
 from open_r1.utils.callbacks import get_callbacks
 from open_r1.utils.wandb_logging import init_wandb_training
-from trl import GRPOTrainer, ModelConfig, ScriptArguments, TrlParser, get_peft_config
-
+from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
+from grpo_trainer_ours import GRPOTrainer
 
 logger = logging.getLogger(__name__)
 
@@ -279,4 +279,5 @@ def main(script_args, training_args, model_args):
 if __name__ == "__main__":
     parser = TrlParser((GRPOScriptArguments, GRPOConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
+    breakpoint()
     main(script_args, training_args, model_args)

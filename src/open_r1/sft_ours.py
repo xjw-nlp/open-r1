@@ -38,6 +38,8 @@ accelerate launch --config_file=recipes/accelerate_configs/zero3.yaml src/open_r
 import logging
 import os
 import sys
+from dataclasses import dataclass, field
+from typing import Optional
 
 import datasets
 import torch
@@ -45,6 +47,8 @@ import transformers
 from datasets import load_dataset
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
+
+from transformers import AutoConfig, AutoModelForCausalLM
 
 from open_r1.configs import SFTConfig
 from open_r1.utils import get_tokenizer
@@ -60,8 +64,99 @@ from trl import (
 )
 from sft_trainer_ours import SFTTrainer
 
+from data_utils import load_train_datasets
+from collator import Collator
+
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SeqRecSFTConfig(SFTConfig):
+    deepspeed: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Used for deepspeed json file."
+        }
+    )
+    only_train_response: bool = field(
+        default=False, 
+        metadata={
+            "help": "Compute loss on the response only."
+        }
+    )
+    data_path: str = field(
+        default="", 
+        metadata={
+            "help": "Data directory."
+        }
+    )
+    dataset: str = field(
+        default="Instruments", 
+        metadata={
+            "help": "Dataset name."
+        }
+    )
+    max_his_len: int = field(
+        default=20, 
+        metadata={
+            "help": "The max number of items in history sequence, -1 means no limit."
+        }
+    )
+    index_file: str = field(
+        default=".index.json", 
+        metadata={
+            "help": "The item indices file."
+        }
+    )
+    his_sep: str = field(
+        default=", ", 
+        metadata={
+            "help": "The separator used for history."
+        }
+    )
+    add_prefix: bool = field(
+        default=False, 
+        metadata={
+            "help": "Whether add sequential prefix in history."
+        }
+    )
+    tasks: str = field(
+        default="seqrec,item2index,index2item,fusionseqrec,itemsearch,preferenceobtain", 
+        metadata={
+            "help": "Downstream tasks, separate by comma."
+        }
+    )
+    train_prompt_sample_num: str = field(
+        default="1,1,1,1,1,1", 
+        metadata={
+            "help": "The number of sampling prompts for each task."
+        }
+    )
+    train_data_sample_num: str = field(
+        default="0,0,0,100000,0,0", 
+        metadata={
+            "help": "The number of sampling prompts for each task."
+        }
+    )
+    valid_prompt_id: int = field(
+        default=0, 
+        metadata={
+            "help": "The prompt used for validation."
+        }
+    )
+    sample_valid: bool = field(
+        default=False, 
+        metadata={
+            "help": "Use sampled prompt for validation."
+        }
+    )
+    valid_prompt_sample_num: int = field(
+        default=2, 
+        metadata={
+            "help": "The number of sampling validation sequential recommendation prompts."
+        }
+    )
 
 
 def main(script_args, training_args, model_args):
@@ -97,16 +192,31 @@ def main(script_args, training_args, model_args):
     if "wandb" in training_args.report_to:
         init_wandb_training(training_args)
 
+    # Load config
+    config = AutoConfig.from_pretrained(model_args.model_name_or_path)
+
     ################
     # Load datasets
     ################
-    dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config)
+    # dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config)
+    train_data, valid_data = load_train_datasets(training_args)
 
     ################
     # Load tokenizer
     ################
     tokenizer = get_tokenizer(model_args, training_args)
     tokenizer.pad_token = tokenizer.eos_token
+
+    # Add new tokens
+    new_tokens = [f'<{i}_{j}>' for i in ['a', 'b', 'c', 'd'] for j in range(256)]
+    add_num = tokenizer.add_tokens(train_data.datasets[0].get_new_tokens(new_tokens))
+    config.vocab_size = len(tokenizer)
+    local_rank = int(os.environ.get("LOCAL_RANK") or 0)
+    if local_rank == 0:
+        print("add {} new token.".format(add_num))
+        tokenizer.save_pretrained(training_args.output_dir)
+        config.save_pretrained(training_args.output_dir)
+    collator = Collator(training_args, tokenizer)
 
     ###################
     # Model init kwargs
@@ -121,25 +231,34 @@ def main(script_args, training_args, model_args):
         trust_remote_code=model_args.trust_remote_code,
         attn_implementation=model_args.attn_implementation,
         torch_dtype=torch_dtype,
-        use_cache=False if training_args.gradient_checkpointing else True,
         device_map=get_kbit_device_map() if quantization_config is not None else None,
         quantization_config=quantization_config,
     )
-    training_args.model_init_kwargs = model_kwargs
-
+    model = AutoModelForCausalLM.from_pretrained(
+        model_args.model_name_or_path,
+        ignore_mismatched_sizes=True,
+        **model_kwargs,
+    )
+    model_args.model_name_or_path = None
+    # breakpoint()
+    print('DEBUG: load model')
+    model.resize_token_embeddings(len(tokenizer))
+    print(model)
     ############################
     # Initialize the SFT Trainer
     ############################
     trainer = SFTTrainer(
-        model=model_args.model_name_or_path,
+        model=model,
         args=training_args,
-        train_dataset=dataset[script_args.dataset_train_split],
-        eval_dataset=dataset[script_args.dataset_test_split] if training_args.eval_strategy != "no" else None,
+        train_dataset=train_data,
+        eval_dataset=valid_data,
         processing_class=tokenizer,
+        data_collator=collator,
+        # data_collator=collate_fn,
         peft_config=get_peft_config(model_args),
         callbacks=get_callbacks(training_args, model_args),
     )
-
+    
     ###############
     # Training loop
     ###############
@@ -151,7 +270,7 @@ def main(script_args, training_args, model_args):
         checkpoint = last_checkpoint
     train_result = trainer.train(resume_from_checkpoint=checkpoint)
     metrics = train_result.metrics
-    metrics["train_samples"] = len(dataset[script_args.dataset_train_split])
+    metrics["train_samples"] = len(train_data)
     trainer.log_metrics("train", metrics)
     trainer.save_metrics("train", metrics)
     trainer.save_state()
@@ -180,7 +299,7 @@ def main(script_args, training_args, model_args):
     if training_args.do_eval:
         logger.info("*** Evaluate ***")
         metrics = trainer.evaluate()
-        metrics["eval_samples"] = len(dataset[script_args.dataset_test_split])
+        metrics["eval_samples"] = len(valid_data)
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
 
@@ -193,6 +312,13 @@ def main(script_args, training_args, model_args):
 
 
 if __name__ == "__main__":
-    parser = TrlParser((ScriptArguments, SFTConfig, ModelConfig))
+    parser = TrlParser((ScriptArguments, SeqRecSFTConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
+    print(script_args)
+    print('<>')
+    print(training_args)
+    print('<>')
+    print(model_args)
+    training_args.remove_unused_columns = False
+    training_args.dataset_kwargs = {"skip_prepare_dataset": True}
     main(script_args, training_args, model_args)
