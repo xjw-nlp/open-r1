@@ -11,7 +11,6 @@ from transformers import LlamaForCausalLM, LlamaTokenizer, LlamaConfig, T5Tokeni
 
 
 class Collator(object):
-
     def __init__(self, args, tokenizer):
         self.args = args
         self.only_train_response = args.only_train_response
@@ -19,6 +18,7 @@ class Collator(object):
         # breakpoint()
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = self.tokenizer.unk_token_id
+        self.tokenizer.padding_side = "left"
         # print(self.tokenizer.model_max_length)
 
     def __call__(self, batch):
@@ -38,26 +38,21 @@ class Collator(object):
         if self.only_train_response:
             # ignore padding
             labels[labels == self.tokenizer.pad_token_id] = -100
+            if self.tokenizer.pad_token_id == self.tokenizer.eos_token_id:
+                labels[:, -1] = self.tokenizer.eos_token_id
             # ignore input text
             labels[torch.where(inputs["labels"] != self.tokenizer.pad_token_id)] = -100
-
         inputs["labels"] = labels
-
-
         return inputs
 
 
 class TestCollator(object):
-
     def __init__(self, args, tokenizer):
         self.args = args
         self.tokenizer = tokenizer
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = 0
-
-        if isinstance(self.tokenizer, LlamaTokenizer):
-            # Allow batched inference
-            self.tokenizer.padding_side = "left"
+        self.tokenizer.padding_side = "left"
 
     def __call__(self, batch):
 

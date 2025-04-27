@@ -460,7 +460,7 @@ class SFTTrainer(Trainer):
         (loss, outputs) = super().compute_loss(
             model, inputs, return_outputs=True, num_items_in_batch=num_items_in_batch
         )
-
+    
         # Compute token accuracy if we have labels and if the model is not using Liger (no logits)
         if "labels" in inputs and not self.use_liger:
             shift_logits = outputs.logits[..., :-1, :].contiguous()
