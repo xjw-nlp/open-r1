@@ -64,7 +64,7 @@ from trl import (
 )
 from sft_trainer_ours import SFTTrainer
 
-from data_utils import load_train_datasets
+from seqrec_utils import load_train_datasets
 from collator import Collator
 
 
@@ -72,13 +72,13 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class SeqRecSFTConfig(SFTConfig):
-    deepspeed: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "Used for deepspeed json file."
-        }
-    )
+class SeqRecScriptArguments(ScriptArguments):
+    # deepspeed: Optional[str] = field(
+    #     default=None,
+    #     metadata={
+    #         "help": "Used for deepspeed json file."
+    #     }
+    # )
     only_train_response: bool = field(
         default=False, 
         metadata={
@@ -199,7 +199,7 @@ def main(script_args, training_args, model_args):
     # Load datasets
     ################
     # dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config)
-    train_data, valid_data = load_train_datasets(training_args)
+    train_data, valid_data = load_train_datasets(script_args)
 
     ################
     # Load tokenizer
@@ -210,13 +210,22 @@ def main(script_args, training_args, model_args):
     # Add new tokens
     new_tokens = [f'<{i}_{j}>' for i in ['a', 'b', 'c', 'd'] for j in range(256)]
     add_num = tokenizer.add_tokens(train_data.datasets[0].get_new_tokens(new_tokens))
+    if not "<think>" in tokenizer.get_vocab():
+        print('Add the special token "<think>"')
+        special_tokens_dict = {'additional_special_tokens': ['<think>']}
+        add_num += tokenizer.add_special_tokens(special_tokens_dict)
+    if not "</think>" in tokenizer.get_vocab():
+        print('Add the special token "</think>"')
+        special_tokens_dict = {'additional_special_tokens': ['</think>']}
+        add_num += tokenizer.add_special_tokens(special_tokens_dict)
+
     config.vocab_size = len(tokenizer)
     local_rank = int(os.environ.get("LOCAL_RANK") or 0)
     if local_rank == 0:
         print("add {} new token.".format(add_num))
         tokenizer.save_pretrained(training_args.output_dir)
         config.save_pretrained(training_args.output_dir)
-    collator = Collator(training_args, tokenizer)
+    collator = Collator(script_args, tokenizer)
 
     ###################
     # Model init kwargs
@@ -312,7 +321,7 @@ def main(script_args, training_args, model_args):
 
 
 if __name__ == "__main__":
-    parser = TrlParser((ScriptArguments, SeqRecSFTConfig, ModelConfig))
+    parser = TrlParser((SeqRecScriptArguments, SFTConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
     print(script_args)
     print('<>')

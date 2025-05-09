@@ -8,6 +8,7 @@ from typing import Dict
 
 from latex2sympy2_extended import NormalizationConfig
 from math_verify import LatexExtractionConfig, parse, verify
+from seqrec_utils import parse_output_semantic_id, is_valid_reasoning_format
 
 from utils import is_e2b_available
 
@@ -17,6 +18,48 @@ if is_e2b_available():
     from e2b_code_interpreter import AsyncSandbox
 
     load_dotenv()
+
+
+def seqrec_accuracy_reward(completions, **kwargs):
+    """Reward function that checks if the completion is the same as the ground truth."""
+    contents = [completion[0]["content"] for completion in completions]
+    targets = kwargs['target']
+    rewards = []
+    for content, target in zip(contents, targets):
+        model_output = parse_output_semantic_id(content)
+        if model_output:
+            reward = float(model_output[-1] == target)
+        else:
+            reward = 0.0
+        rewards.append(reward)
+    return rewards
+
+
+def seqrec_format_reward(completions, **kwargs):
+    """Reward function that checks if the generative recommender output is valid."""
+    contents = [completion[0]["content"] for completion in completions]
+    task_types = kwargs['task_type']
+    rewards = []
+    simple_pattern = r"""^
+        \s*
+        (<a_\d+><b_\d+><c_\d+><d_\d+>)
+        \s*$
+    """
+    hard_pattern = r"""^
+        <think>.*?</think>
+        \s*
+        (<a_\d+><b_\d+><c_\d+><d_\d+>)
+        \s*$
+    """
+    for content, task_type in zip(contents, task_types):
+        if task_type == 'simple':
+            pattern = simple_pattern
+        elif task_type == 'hard':
+            pattern = hard_pattern
+        else:
+            NotImplementedError
+        rewards.append(float(re.match(pattern, content, re.DOTALL | re.VERBOSE) is not None))
+    return rewards
 
 
 def accuracy_reward(completions, solution, **kwargs):

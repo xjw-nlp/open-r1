@@ -96,7 +96,6 @@ def test_ddp(args):
     test_data = load_test_dataset(args)
     ddp_sampler = DistributedSampler(test_data, num_replicas=world_size, rank=local_rank, drop_last=True)
 
-    test_data = load_test_dataset(args)
     collator = TestCollator(args, tokenizer)
     all_items = test_data.get_all_items()
 
@@ -152,13 +151,11 @@ def test_ddp(args):
                         print("Beam:", num_beams)
                     except Exception:
                         raise RuntimeError
-                # breakpoint()
                 output_ids = output["sequences"]
                 scores = output["sequences_scores"]
                 output = tokenizer.batch_decode(
                     output_ids, skip_special_tokens=True
                 )
-                # breakpoint()
                 topk_res = get_topk_results(output, scores, targets, num_beams,
                                             all_items=all_items if args.filter_items else None)
 

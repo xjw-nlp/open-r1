@@ -3,11 +3,12 @@ import logging
 import os
 import random
 import datetime
+import re
 
 import numpy as np
 import torch
 from torch.utils.data import ConcatDataset
-from dataset import SeqRecDataset, ItemFeatDataset, ItemSearchDataset, FusionSeqRecDataset, SeqRecTestDataset, PreferenceObtainDataset
+from dataset import SeqRecDataset, ItemFeatDataset, ItemSearchDataset, FusionSeqRecDataset, SeqRecTestDataset, PreferenceObtainDataset, SageCoTSeqRecDataset, DummyCoTSeqRecDataset
 
 
 def parse_global_args(parser):
@@ -25,6 +26,7 @@ def parse_global_args(parser):
 
 
     return parser
+
 
 def parse_dataset_args(parser):
     parser.add_argument("--data_path", type=str, default="",
@@ -56,6 +58,7 @@ def parse_dataset_args(parser):
                         help="the number of sampling validation sequential recommendation prompts")
 
     return parser
+
 
 def parse_train_args(parser):
 
@@ -89,6 +92,7 @@ def parse_train_args(parser):
     parser.add_argument("--temperature", type=float, default=1.0)
 
     return parser
+
 
 def parse_test_args(parser):
 
@@ -135,12 +139,13 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.enabled = False
 
+
 def ensure_dir(dir_path):
 
     os.makedirs(dir_path, exist_ok=True)
 
 
-def load_datasets(args):
+def load_train_datasets(args):
 
     tasks = args.tasks.split(",")
 
@@ -165,7 +170,10 @@ def load_datasets(args):
 
         elif task.lower() == "preferenceobtain":
             dataset = PreferenceObtainDataset(args, prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
-
+        elif task.lower() == "sagecotseqrec":
+            dataset = SageCoTSeqRecDataset(args, mode="train", prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
+        elif task.lower() == "dummycotseqrec":
+            dataset = DummyCoTSeqRecDataset(args, mode="train", prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
         else:
             raise NotImplementedError
         train_datasets.append(dataset)
@@ -176,6 +184,7 @@ def load_datasets(args):
 
     return train_data, valid_data
 
+
 def load_test_dataset(args):
 
     if args.test_task.lower() == "seqrec":
@@ -185,12 +194,36 @@ def load_test_dataset(args):
         test_data = ItemSearchDataset(args, mode="test", sample_num=args.sample_num)
     elif args.test_task.lower() == "fusionseqrec":
         test_data = FusionSeqRecDataset(args, mode="test", sample_num=args.sample_num)
+    elif args.test_task.lower() == "sagecotseqrec":
+        test_data = SageCoTSeqRecDataset(args, mode="test", sample_num=args.sample_num)
+    elif args.test_task.lower() == "dummycotseqrec":
+        test_data = DummyCoTSeqRecDataset(args, mode="test", sample_num=args.sample_num)
     else:
         raise NotImplementedError
 
     return test_data
 
+
 def load_json(file):
     with open(file, 'r') as f:
         data = json.load(f)
     return data
+
+
+def parse_output_semantic_id(content):
+    after_think = content.split('</think>', 1)[-1]
+
+    pattern = r'(<a_\d+><b_\d+><c_\d+><d_\d+>)'
+    matches = re.findall(pattern, after_think)
+    # return a list of semantic IDs
+    return matches
+
+
+def is_valid_reasoning_format(s):
+    pattern = r"""^
+        <think>.*?</think>
+        \s*
+        (<a_\d+><b_\d+><c_\d+><d_\d+>)
+        \s*$
+    """
+    return re.match(pattern, s, re.DOTALL | re.VERBOSE) is not None

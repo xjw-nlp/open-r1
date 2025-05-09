@@ -7,7 +7,7 @@ import datetime
 import numpy as np
 import torch
 from torch.utils.data import ConcatDataset
-from dataset import SeqRecDataset, ItemFeatDataset, ItemSearchDataset, FusionSeqRecDataset, SeqRecTestDataset, PreferenceObtainDataset
+from dataset import SeqRecDataset, ItemFeatDataset, ItemSearchDataset, FusionSeqRecDataset, SeqRecTestDataset, PreferenceObtainDataset, CoTSeqRecDataset
 
 def load_train_datasets(args):
 
@@ -34,7 +34,8 @@ def load_train_datasets(args):
 
         elif task.lower() == "preferenceobtain":
             dataset = PreferenceObtainDataset(args, prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
-
+        elif task.lower() == "cotseqrec":
+            dataset = CoTSeqRecDataset(args, mode="train", prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
         else:
             raise NotImplementedError
         train_datasets.append(dataset)

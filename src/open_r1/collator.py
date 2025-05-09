@@ -24,7 +24,6 @@ class Collator(object):
     def __call__(self, batch):
         input_texts = [d["input_ids"] for d in batch]
         full_texts = [d["labels"] + self.tokenizer.eos_token for d in batch]
-        # breakpoint()
         inputs = self.tokenizer(
             text = full_texts,
             text_target = input_texts,

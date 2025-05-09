@@ -661,3 +661,129 @@ prompt["response"] = "{explicit_preference}"
 preferenceobtain_prompt.append(prompt)
 
 all_prompt["preferenceobtain"] = preferenceobtain_prompt
+
+
+# ========================================================
+# Task 7 -- Sage CoT Sequential Recommendation -- Prompt
+# ========================================================
+
+sage_cotseqrec_prompt = []
+
+#####——0
+prompt = {}
+prompt["instruction"] = "The user has interacted with items (represented as text item titles) {text_inter} in chronological order. Please reason in detail about the next item the user might be interested in via the sequence of item titles, and answer in the format '<think> reasoning process </think> result', where 'result' should be expressed as a semantic item ID."
+prompt["response"] = "<think> {reasoning} </think> {tgt_semantic_id}"
+sage_cotseqrec_prompt.append(prompt)
+
+#####——1
+prompt = {}
+prompt["instruction"] = "The user has interacted with items (represented as semantic item IDs) {semantic_inter} in chronological order. Please reason in detail about the next item the user might be interested in via the sequence of item semantic IDs, and answer in the format '<think> reasoning process </think> result', where 'result' should be expressed as a semantic item ID."
+prompt["response"] = "<think> {reasoning} </think> {tgt_semantic_id}"
+sage_cotseqrec_prompt.append(prompt)
+
+all_prompt["sagecotseqrec"] = sage_cotseqrec_prompt
+
+
+# ========================================================
+# Task 8 -- Dummy CoT Sequential Recommendation -- Prompt
+# ========================================================
+
+dummy_cotseqrec_prompt = []
+
+#####——0
+prompt = {}
+prompt["instruction"] = "The user has interacted with items (represented as text item titles) {text_inter} in chronological order. Please reason in detail about the next item the user might be interested in via the sequence of item titles, and answer in the format '<think> reasoning process </think> result', where 'result' should be expressed as a semantic item ID."
+prompt["response"] = """<think> The user's historical interaction sequence in chronological order is as follows:
+{semantic_inter}
+
+Next, the user may interact with a new item with the following details:
+- Title: {item_title}
+- Description: {item_description}
+- Brand: {item_brand}
+- Category: {item_category}
+- Semantic ID: {item_semantic_id} </think> {item_semantic_id}"""
+dummy_cotseqrec_prompt.append(prompt)
+
+#####——1
+prompt = {}
+prompt["instruction"] = "The user has interacted with items (represented as semantic item IDs) {semantic_inter} in chronological order. Please reason in detail about the next item the user might be interested in via the sequence of item semantic IDs, and answer in the format '<think> reasoning process </think> result', where 'result' should be expressed as a semantic item ID."
+prompt["response"] = """<think> The user's historical interaction sequence in chronological order is as follows:
+{text_inter}
+
+Next, the user may interact with a new item with the following details:
+- Title: {item_title}
+- Description: {item_description}
+- Brand: {item_brand}
+- Category: {item_category}
+- Semantic ID: {item_semantic_id} </think> {item_semantic_id}"""
+dummy_cotseqrec_prompt.append(prompt)
+
+all_prompt["dummycotseqrec"] = dummy_cotseqrec_prompt
+
+
+
+# Sequential recommendation with GRPO
+
+GRPO_SEQREC_TEMPLATES = dict()
+
+## Simple Templates
+simple_prompts = []
+
+####-0
+prompt = {}
+prompt["instruction"] = "The user has interacted with items (represented as semantic item IDs) {semantic_inter} in chronological order. Please speculate next semantic item ID the user might be interested in."
+prompt["response"] = "{item_semantic_id}"
+simple_prompts.append(prompt)
+
+####-1
+prompt = {}
+prompt["instruction"] = "The user has interacted with items (represented as text item titles) {text_inter} in chronological order. Please speculate next semantic item ID the user might be interested in."
+prompt["response"] = "{item_semantic_id}"
+simple_prompts.append(prompt)
+
+GRPO_SEQREC_TEMPLATES['simple'] = simple_prompts
+
+
+## Hard Templates
+hard_prompts = []
+
+####-0
+prompt = {}
+prompt["instruction"] = "The user has interacted with items (represented as semantic item IDs) {semantic_inter} in chronological order. Please reason in detail about the next item the user might be interested in via the sequence of item semantic IDs, and answer in the format '<think> reasoning process </think> result', where 'result' should be expressed as a semantic item ID."
+prompt["response"] = """<think> The user's historical interaction sequence in chronological order is as follows:
+{text_inter}
+
+Next, the user may interact with a new item with the following details:
+- Title: {item_title}
+- Description: {item_description}
+- Brand: {item_brand}
+- Category: {item_category}
+- Semantic ID: {item_semantic_id} </think> {item_semantic_id}"""
+hard_prompts.append(prompt)
+
+####-1
+prompt = {}
+prompt["instruction"] = "The user has interacted with items (represented as text item titles) {text_inter} in chronological order. Please reason in detail about the next item the user might be interested in via the sequence of item titles, and answer in the format '<think> reasoning process </think> result', where 'result' should be expressed as a semantic item ID."
+prompt["response"] = """<think> The user's historical interaction sequence in chronological order is as follows:
+{semantic_inter}
+
+Next, the user may interact with a new item with the following details:
+- Title: {item_title}
+- Description: {item_description}
+- Brand: {item_brand}
+- Category: {item_category}
+- Semantic ID: {item_semantic_id} </think> {item_semantic_id}"""
+hard_prompts.append(prompt)
+
+GRPO_SEQREC_TEMPLATES['hard'] = hard_prompts
+
+
+# GRPO_SEQREC_TEMPLATES = {
+#     'simple': [
+#         """
+#         """
+#     ],
+#     'hard': [
+
+#     ]
+# }

@@ -13,4 +13,4 @@ accelerate launch --config_file recipes/accelerate_configs/zero2_ours.yaml \
     --per_device_train_batch_size 16 \
     --gradient_checkpointing \
     --bf16 \
-    --output_dir data/Qwen2.5-1.5B-Open-R1-Distill-25041600
+    --output_dir model/Qwen2.5-1.5B-Open-R1-Distill-25041600

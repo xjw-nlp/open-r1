@@ -362,7 +362,7 @@ class SFTTrainer(Trainer):
         # Convert the dataset to an IterableDataset if it is a ConstantLengthDataset
         if isinstance(dataset, ConstantLengthDataset):
             return dataset
-
+        breakpoint()
         # If the dataset is already preprocessed (tokenized), skip the processing steps.
         column_names = list(next(iter(dataset)).keys())
         is_processed = "input_ids" in column_names

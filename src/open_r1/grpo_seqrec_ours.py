@@ -15,6 +15,8 @@
 import logging
 import os
 import sys
+import random
+import json
 from dataclasses import dataclass, field
 
 # sys.path.append('/apdcephfs_qy3/share_1565115/jonxie/workspace/open-r1/rewards')
@@ -37,12 +39,16 @@ from rewards import (
     len_reward,
     reasoning_steps_reward,
     tag_count_reward,
+    seqrec_accuracy_reward,
+    seqrec_format_reward,
 )
 from open_r1.utils import get_tokenizer
 from open_r1.utils.callbacks import get_callbacks
 from open_r1.utils.wandb_logging import init_wandb_training
 from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
-from grpo_trainer_ours import GRPOTrainer
+from seqrec_grpo_trainer_ours import SeqRecGRPOTrainer
+
+from prompt import GRPO_SEQREC_TEMPLATES
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +118,34 @@ class GRPOScriptArguments(ScriptArguments):
     )
 
 
+@dataclass
+class SeqRecGRPOScriptArguments(GRPOScriptArguments):
+    index_file: str = field(
+        default='.index.json',
+        metadata={"help": "Semantic item ID mapping file"},
+    )
+    item_file: str = field(
+        default='.item.json',
+        metadata={"help": "Text item information mapping file"},
+    )
+    dataset: str = field(
+        default='Instruments',
+        metadata={"help": "Dataset name"},
+    )
+    seqrec_data_path: str = field(
+        default='',
+        metadata={"help": "The data path for the sequential recommendation"}
+    )
+    max_his_len: int = field(
+        default=20,
+        metadata={"help": "Maximum number of recent interacted item"}
+    )
+    his_sep: str = field(
+        default=', ',
+        metadata={"help": "The separator between items"},
+    )
+
+
 def main(script_args, training_args, model_args):
     # Set seed for reproducibility
     set_seed(training_args.seed)
@@ -152,6 +186,11 @@ def main(script_args, training_args, model_args):
 
     # Load the dataset
     dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config)
+    seqrec_data_path = os.path.join(script_args.seqrec_data_path, script_args.dataset)
+    with open(os.path.join(seqrec_data_path, script_args.dataset + script_args.index_file)) as f:
+        index_mapping = json.load(f)
+    with open(os.path.join(seqrec_data_path, script_args.dataset + script_args.item_file)) as f:
+        item_mapping = json.load(f)
 
     ################
     # Load tokenizer
@@ -178,21 +217,43 @@ def main(script_args, training_args, model_args):
         "code": code_reward,
         "code_format": get_code_format_reward(language=script_args.code_language),
         "tag_count": tag_count_reward,
+        "seqrec_accuracy": seqrec_accuracy_reward,
+        "seqrec_format": seqrec_format_reward,
     }
     reward_funcs = [REWARD_FUNCS_REGISTRY[func] for func in script_args.reward_funcs]
-
     # Format into conversation
+    def convert_one_seqrec_prompt(src_data):
+        his_inter_ids = src_data['his_inter_ids']
+        tgt_item_id = src_data['tgt_item_id']
+        one_data = dict()
+        one_data["item_semantic_id"] = "".join(index_mapping[str(tgt_item_id)])
+        one_data["item_title"] = item_mapping[str(tgt_item_id)]["title"].strip().strip(".!?,;:`")
+        one_data["item_description"] = item_mapping[str(tgt_item_id)]["description"]
+        one_data["item_brand"] = item_mapping[str(tgt_item_id)]['brand']
+        one_data["item_category"] = item_mapping[str(tgt_item_id)]["categories"]
+        history = his_inter_ids
+        if script_args.max_his_len > 0:
+            history = history[-script_args.max_his_len:]
+        inters = ["".join(index_mapping[str(j)]) for j in history]
+        inter_titles = ["\"" + item_mapping[str(j)]["title"].strip().strip(".!?,;:`") + "\"" for j in history]
+        one_data["semantic_inter"] = script_args.his_sep.join(inters)
+        one_data["text_inter"] = script_args.his_sep.join(inter_titles)
+        return one_data
     def make_conversation(example):
         prompt = []
-
         if training_args.system_prompt is not None:
             prompt.append({"role": "system", "content": training_args.system_prompt})
-
-        prompt.append({"role": "user", "content": example["problem"]})
-        return {"prompt": prompt}
-
+        sample_info = convert_one_seqrec_prompt(example)
+        seqrec_task_type = random.choice(list(GRPO_SEQREC_TEMPLATES.keys()))
+        template = random.choice(GRPO_SEQREC_TEMPLATES[seqrec_task_type])
+        instruction = template['instruction'].format(**sample_info)
+        response = template['response'].format(**sample_info)
+        target = sample_info['item_semantic_id']
+        prompt.append({"role": "user", "content": instruction})
+        return {"prompt": prompt, "response": response, "target": target, "task_type": seqrec_task_type}
+    
     dataset = dataset.map(make_conversation)
-
+    # breakpoint()
     for split in dataset:
         if "messages" in dataset[split].column_names:
             dataset[split] = dataset[split].remove_columns("messages")
@@ -213,7 +274,7 @@ def main(script_args, training_args, model_args):
     #############################
     # Initialize the GRPO trainer
     #############################
-    trainer = GRPOTrainer(
+    trainer = SeqRecGRPOTrainer(
         model=model_args.model_name_or_path,
         reward_funcs=reward_funcs,
         args=training_args,
@@ -277,6 +338,7 @@ def main(script_args, training_args, model_args):
 
 
 if __name__ == "__main__":
-    parser = TrlParser((GRPOScriptArguments, GRPOConfig, ModelConfig))
+    parser = TrlParser((SeqRecGRPOScriptArguments, GRPOConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
+    # breakpoint()
     main(script_args, training_args, model_args)
