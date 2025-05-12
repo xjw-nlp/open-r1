@@ -9,7 +9,7 @@ check_dirs := src tests
 # dev dependencies
 install:
 	uv venv openr1 --python 3.11 && . openr1/bin/activate && uv pip install --upgrade pip
-	uv pip install vllm==0.7.2
+	uv pip install vllm==0.8.4
 	uv pip install setuptools
 	uv pip install flash-attn --no-build-isolation
 	GIT_LFS_SKIP_SMUDGE=1 uv pip install -e ".[dev]"
@@ -24,7 +24,10 @@ quality:
 	flake8 --max-line-length 119 $(check_dirs) setup.py
 
 test:
-	pytest -sv tests/
+	pytest -sv --ignore=tests/slow/ tests/
+
+slow_test:
+	pytest -sv -vv tests/slow/
 
 # Evaluation
 
@@ -43,8 +46,7 @@ evaluate:
 			--use-chat-template \
 			--output-dir data/evals/$(MODEL); \
 	else \
-		lighteval vllm $$MODEL_ARGS "custom|$(TASK)|0|0" \
-			--custom-tasks src/open_r1/evaluate.py \
+		lighteval vllm $$MODEL_ARGS "lighteval|$(TASK)|0|0" \
 			--use-chat-template \
 			--output-dir data/evals/$(MODEL); \
 	fi
