@@ -22,7 +22,12 @@ if is_e2b_available():
 
 def seqrec_accuracy_reward(completions, **kwargs):
     """Reward function that checks if the completion is the same as the ground truth."""
-    contents = [completion[0]["content"] for completion in completions]
+    contents = []
+    for completion in completions:
+        if isinstance(completion, list):
+            contents.append(completion[0]["content"])
+        else:
+            contents.append(completion)
     targets = kwargs['target']
     rewards = []
     for content, target in zip(contents, targets):
@@ -37,7 +42,12 @@ def seqrec_accuracy_reward(completions, **kwargs):
 
 def seqrec_format_reward(completions, **kwargs):
     """Reward function that checks if the generative recommender output is valid."""
-    contents = [completion[0]["content"] for completion in completions]
+    contents = []
+    for completion in completions:
+        if isinstance(completion, list):
+            contents.append(completion[0]["content"])
+        else:
+            contents.append(completion)
     task_types = kwargs['task_type']
     rewards = []
     simple_pattern = r"""^

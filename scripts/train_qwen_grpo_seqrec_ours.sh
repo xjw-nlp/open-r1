@@ -3,7 +3,7 @@ TIME_TAG=$(date +%Y%m%d%H%M%S)
 MODEL_NAME=DeepSeek-R1-Distill-Qwen-1.5B
 DATA_PATH=/apdcephfs_qy3/share_1565115/jonxie/workspace/open-r1/data
 BASE_MODEL_PATH=/apdcephfs_qy3/share_1565115/shared_resource/model_base/${MODEL_NAME}
-CKPT_PATH=/apdcephfs_qy3/share_1565115/jonxie/workspace/open-r1/model/DeepSeek-R1-Distill-Qwen-1.5B-seqrec-sft-20250507173030/checkpoint-38000
+CKPT_PATH=/apdcephfs_qy3/share_1565115/jonxie/workspace/open-r1/model/DeepSeek-R1-Distill-Qwen-1.5B-seqrec-sft-20250509113214/checkpoint-36000
 
 ACCELERATE_LOG_LEVEL=info accelerate launch --config_file recipes/accelerate_configs/zero2.yaml \
     --num_processes=1 src/open_r1/grpo_seqrec_ours.py \
@@ -20,5 +20,6 @@ ACCELERATE_LOG_LEVEL=info accelerate launch --config_file recipes/accelerate_con
     --dataset Instruments \
     --index_file .index.20250414.json \
     --max_prompt_length 10240 \
-    --save_total_limit 3
+    --num_train_epochs 10 \
+    --save_total_limit 5
 

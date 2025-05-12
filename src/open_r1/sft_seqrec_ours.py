@@ -249,7 +249,6 @@ def main(script_args, training_args, model_args):
         **model_kwargs,
     )
     model_args.model_name_or_path = None
-    # breakpoint()
     print('DEBUG: load model')
     model.resize_token_embeddings(len(tokenizer))
     print(model)

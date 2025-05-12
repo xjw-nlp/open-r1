@@ -3,9 +3,8 @@
 sft_prompt = "Below is an instruction that describes a task. Write a response that appropriately completes the request." \
              "\n\n### Instruction:\n{instruction}\n\n### Response:{response}"
 
-
-
-
+grpo_prompt = "Below is an instruction that describes a task. Write a response that appropriately completes the request." \
+             "\n\n### Instruction:\n{instruction}\n\n### Response:{response}"
 
 
 
@@ -16,6 +15,13 @@ all_prompt = {}
 # =====================================================
 
 seqrec_prompt = []
+
+# Add prompts for xjw
+
+prompt = {}
+prompt["instruction"] = "The user has interacted with items (represented as item semantic IDs) {inters} in chronological order. Please directly speculate next semantic item ID the user might be interested in."
+prompt["response"] = "{item}"
+seqrec_prompt.append(prompt)
 
 #####——0
 prompt = {}
@@ -731,13 +737,13 @@ simple_prompts = []
 
 ####-0
 prompt = {}
-prompt["instruction"] = "The user has interacted with items (represented as semantic item IDs) {semantic_inter} in chronological order. Please speculate next semantic item ID the user might be interested in."
+prompt["instruction"] = "The user has interacted with items (represented as semantic item IDs) {semantic_inter} in chronological order. Please directly speculate next semantic item ID the user might be interested in."
 prompt["response"] = "{item_semantic_id}"
 simple_prompts.append(prompt)
 
 ####-1
 prompt = {}
-prompt["instruction"] = "The user has interacted with items (represented as text item titles) {text_inter} in chronological order. Please speculate next semantic item ID the user might be interested in."
+prompt["instruction"] = "The user has interacted with items (represented as text item titles) {text_inter} in chronological order. Please directly speculate next semantic item ID the user might be interested in."
 prompt["response"] = "{item_semantic_id}"
 simple_prompts.append(prompt)
 

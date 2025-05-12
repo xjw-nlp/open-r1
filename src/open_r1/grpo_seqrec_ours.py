@@ -48,7 +48,7 @@ from open_r1.utils.wandb_logging import init_wandb_training
 from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
 from seqrec_grpo_trainer_ours import SeqRecGRPOTrainer
 
-from prompt import GRPO_SEQREC_TEMPLATES
+from prompt import GRPO_SEQREC_TEMPLATES, grpo_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +143,10 @@ class SeqRecGRPOScriptArguments(GRPOScriptArguments):
     his_sep: str = field(
         default=', ',
         metadata={"help": "The separator between items"},
+    )
+    use_conversation: bool = field(
+        default=False,
+        metadata={"help": "Whether to use the conversational format for prompting"}
     )
 
 
@@ -239,18 +243,30 @@ def main(script_args, training_args, model_args):
         one_data["semantic_inter"] = script_args.his_sep.join(inters)
         one_data["text_inter"] = script_args.his_sep.join(inter_titles)
         return one_data
-    def make_conversation(example):
-        prompt = []
-        if training_args.system_prompt is not None:
-            prompt.append({"role": "system", "content": training_args.system_prompt})
-        sample_info = convert_one_seqrec_prompt(example)
-        seqrec_task_type = random.choice(list(GRPO_SEQREC_TEMPLATES.keys()))
-        template = random.choice(GRPO_SEQREC_TEMPLATES[seqrec_task_type])
-        instruction = template['instruction'].format(**sample_info)
-        response = template['response'].format(**sample_info)
-        target = sample_info['item_semantic_id']
-        prompt.append({"role": "user", "content": instruction})
-        return {"prompt": prompt, "response": response, "target": target, "task_type": seqrec_task_type}
+    
+    if script_args.use_conversation:
+        def make_conversation(example):
+            prompt = []
+            if training_args.system_prompt is not None:
+                prompt.append({"role": "system", "content": training_args.system_prompt})
+            sample_info = convert_one_seqrec_prompt(example)
+            seqrec_task_type = random.choice(list(GRPO_SEQREC_TEMPLATES.keys()))
+            template = random.choice(GRPO_SEQREC_TEMPLATES[seqrec_task_type])
+            instruction = template['instruction'].format(**sample_info)
+            response = template['response'].format(**sample_info)
+            target = sample_info['item_semantic_id']
+            prompt.append({"role": "user", "content": instruction})
+            return {"prompt": prompt, "response": response, "target": target, "task_type": seqrec_task_type}
+    else:
+        def make_conversation(example):
+            sample_info = convert_one_seqrec_prompt(example)
+            seqrec_task_type = random.choice(list(GRPO_SEQREC_TEMPLATES.keys()))
+            template = random.choice(GRPO_SEQREC_TEMPLATES[seqrec_task_type])
+            instruction = template['instruction'].format(**sample_info)
+            response = template['response'].format(**sample_info)
+            target = sample_info['item_semantic_id']
+            prompt = grpo_prompt.format(instruction=instruction, response='')
+            return {"prompt": prompt, "response": response, "target": target, "task_type": seqrec_task_type}
     
     dataset = dataset.map(make_conversation)
     # breakpoint()
