@@ -22,8 +22,10 @@ class Collator(object):
         # print(self.tokenizer.model_max_length)
 
     def __call__(self, batch):
+        # print(batch)
         input_texts = [d["input_ids"] for d in batch]
         full_texts = [d["labels"] + self.tokenizer.eos_token for d in batch]
+        # print(full_texts)
         inputs = self.tokenizer(
             text = full_texts,
             text_target = input_texts,
@@ -34,6 +36,8 @@ class Collator(object):
             return_attention_mask=True,
         )
         labels = copy.deepcopy(inputs["input_ids"])
+        # print(full_texts)
+        # print(labels.shape)
         if self.only_train_response:
             # ignore padding
             labels[labels == self.tokenizer.pad_token_id] = -100
@@ -41,6 +45,7 @@ class Collator(object):
                 labels[:, -1] = self.tokenizer.eos_token_id
             # ignore input text
             labels[torch.where(inputs["labels"] != self.tokenizer.pad_token_id)] = -100
+        # print(labels)
         inputs["labels"] = labels
         return inputs
 

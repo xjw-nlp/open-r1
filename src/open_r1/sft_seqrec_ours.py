@@ -20,7 +20,7 @@ Usage:
 # One 1 node of 8 x H100s
 accelerate launch --config_file=recipes/accelerate_configs/zero3.yaml src/open_r1/sft.py \
     --model_name_or_path Qwen/Qwen2.5-1.5B-Instruct \
-    --dataset_name HuggingFaceH4/Bespoke-Stratos-17k \
+    --dataset_name open-r1/OpenR1-Math-220k \
     --learning_rate 2.0e-5 \
     --num_train_epochs 1 \
     --packing \
@@ -157,6 +157,12 @@ class SeqRecScriptArguments(ScriptArguments):
             "help": "The number of sampling validation sequential recommendation prompts."
         }
     )
+    use_chat_template: bool = field(
+        default=False, 
+        metadata={
+            "help": "Whether to use the chat template in tokenizier."
+        }
+    )
 
 
 def main(script_args, training_args, model_args):
@@ -196,28 +202,28 @@ def main(script_args, training_args, model_args):
     config = AutoConfig.from_pretrained(model_args.model_name_or_path)
 
     ################
-    # Load datasets
-    ################
-    # dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config)
-    train_data, valid_data = load_train_datasets(script_args)
-
-    ################
     # Load tokenizer
     ################
     tokenizer = get_tokenizer(model_args, training_args)
-    tokenizer.pad_token = tokenizer.eos_token
-
+    # breakpoint()
+    if not hasattr(tokenizer, "pad_token"):
+        tokenizer.pad_token = tokenizer.eos_token
+    
+     ################
+    # Load datasets
+    ################
+    # dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config)
+    train_data, valid_data = load_train_datasets(script_args, tokenizer)
+    
     # Add new tokens
     new_tokens = [f'<{i}_{j}>' for i in ['a', 'b', 'c', 'd'] for j in range(256)]
     add_num = tokenizer.add_tokens(train_data.datasets[0].get_new_tokens(new_tokens))
     if not "<think>" in tokenizer.get_vocab():
-        print('Add the special token "<think>"')
-        special_tokens_dict = {'additional_special_tokens': ['<think>']}
-        add_num += tokenizer.add_special_tokens(special_tokens_dict)
+        print('Add the token "<think>"')
+        add_num += tokenizer.add_tokens(['<think>'])
     if not "</think>" in tokenizer.get_vocab():
-        print('Add the special token "</think>"')
-        special_tokens_dict = {'additional_special_tokens': ['</think>']}
-        add_num += tokenizer.add_special_tokens(special_tokens_dict)
+        print('Add the token "</think>"')
+        add_num += tokenizer.add_tokens(['</think>'])
 
     config.vocab_size = len(tokenizer)
     local_rank = int(os.environ.get("LOCAL_RANK") or 0)
@@ -225,6 +231,8 @@ def main(script_args, training_args, model_args):
         print("add {} new token.".format(add_num))
         tokenizer.save_pretrained(training_args.output_dir)
         config.save_pretrained(training_args.output_dir)
+    if hasattr(training_args, 'max_seq_length'):
+        tokenizer.model_max_length = training_args.max_seq_length
     collator = Collator(script_args, tokenizer)
 
     ###################
@@ -322,6 +330,7 @@ def main(script_args, training_args, model_args):
 if __name__ == "__main__":
     parser = TrlParser((SeqRecScriptArguments, SFTConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
+    # breakpoint()
     print(script_args)
     print('<>')
     print(training_args)

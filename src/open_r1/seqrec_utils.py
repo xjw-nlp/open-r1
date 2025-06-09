@@ -8,7 +8,7 @@ import re
 import numpy as np
 import torch
 from torch.utils.data import ConcatDataset
-from dataset import SeqRecDataset, ItemFeatDataset, ItemSearchDataset, FusionSeqRecDataset, SeqRecTestDataset, PreferenceObtainDataset, SageCoTSeqRecDataset, DummyCoTSeqRecDataset
+from dataset import SeqRecDataset, ItemFeatDataset, ItemSearchDataset, FusionSeqRecDataset, SeqRecTestDataset, PreferenceObtainDataset, SageCoTSeqRecDataset, DummyCoTSeqRecDataset, NextKSeqRecDataset, DirectSeqRecDataset
 
 
 def parse_global_args(parser):
@@ -56,7 +56,8 @@ def parse_dataset_args(parser):
                         help="use sampled prompt for validation")
     parser.add_argument("--valid_prompt_sample_num", type=int, default=2,
                         help="the number of sampling validation sequential recommendation prompts")
-
+    parser.add_argument("--use_chat_template", action="store_true", default=False,
+                        help="Whether to use chat template")
     return parser
 
 
@@ -118,7 +119,7 @@ def parse_test_args(parser):
     parser.add_argument("--metrics", type=str, default="hit@1,hit@5,hit@10,ndcg@5,ndcg@10",
                         help="test metrics, separate by comma")
     parser.add_argument("--test_task", type=str, default="SeqRec")
-
+    parser.add_argument("--max_new_tokens", type=int, default=10)
 
     return parser
 
@@ -145,7 +146,7 @@ def ensure_dir(dir_path):
     os.makedirs(dir_path, exist_ok=True)
 
 
-def load_train_datasets(args):
+def load_train_datasets(args, tokenizer=None):
 
     tasks = args.tasks.split(",")
 
@@ -157,38 +158,53 @@ def load_train_datasets(args):
     train_datasets = []
     for task, prompt_sample_num,data_sample_num in zip(tasks,train_prompt_sample_num,train_data_sample_num):
         if task.lower() == "seqrec":
-            dataset = SeqRecDataset(args, mode="train", prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
-
+            dataset = SeqRecDataset(args, mode="train", prompt_sample_num=prompt_sample_num, sample_num=data_sample_num, tokenizer=tokenizer)
+        elif task.lower() == "nextkseqrec":
+            dataset = NextKSeqRecDataset(args, mode="train", prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
         elif task.lower() == "item2index" or task.lower() == "index2item":
             dataset = ItemFeatDataset(args, task=task.lower(), prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
-
         elif task.lower() == "fusionseqrec":
             dataset = FusionSeqRecDataset(args, mode="train", prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
-
         elif task.lower() == "itemsearch":
             dataset = ItemSearchDataset(args, mode="train", prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
-
         elif task.lower() == "preferenceobtain":
             dataset = PreferenceObtainDataset(args, prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
         elif task.lower() == "sagecotseqrec":
-            dataset = SageCoTSeqRecDataset(args, mode="train", prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
+            dataset = SageCoTSeqRecDataset(args, mode="train", prompt_sample_num=prompt_sample_num, sample_num=data_sample_num, tokenizer=tokenizer)
         elif task.lower() == "dummycotseqrec":
-            dataset = DummyCoTSeqRecDataset(args, mode="train", prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
+            dataset = DummyCoTSeqRecDataset(args, mode="train", prompt_sample_num=prompt_sample_num, sample_num=data_sample_num, tokenizer=tokenizer)
+        elif task.lower() == "directseqrec":
+            dataset = DirectSeqRecDataset(args, mode="train", prompt_sample_num=prompt_sample_num, sample_num=data_sample_num, tokenizer=tokenizer)
         else:
             raise NotImplementedError
         train_datasets.append(dataset)
 
     train_data = ConcatDataset(train_datasets)
 
-    valid_data = SeqRecDataset(args,"valid",args.valid_prompt_sample_num)
+    if len(tasks) > 1:
+        if 'directseqrec' in tasks:
+            valid_data = DirectSeqRecDataset(args,"valid",args.valid_prompt_sample_num, tokenizer=tokenizer)
+        else:
+            valid_data = SeqRecDataset(args,"valid",args.valid_prompt_sample_num, tokenizer=tokenizer)
+    else:
+        if task.lower() == "seqrec":
+            valid_data = SeqRecDataset(args, "valid", args.valid_prompt_sample_num, tokenizer=tokenizer)
+        elif task.lower() == "sagecotseqrec":
+            valid_data = SageCoTSeqRecDataset(args, "valid", args.valid_prompt_sample_num, tokenizer=tokenizer)
+        elif task.lower() == "dummycotseqrec":
+            valid_data = DummyCoTSeqRecDataset(args, "valid", args.valid_prompt_sample_num, tokenizer=tokenizer)
+        elif task.lower() == "directseqrec":
+            valid_data = DirectSeqRecDataset(args, "valid", args.valid_prompt_sample_num, tokenizer=tokenizer)
+        else:
+            raise NotImplementedError
 
     return train_data, valid_data
 
 
-def load_test_dataset(args):
+def load_test_dataset(args, tokenizer=None):
 
     if args.test_task.lower() == "seqrec":
-        test_data = SeqRecDataset(args, mode="test", sample_num=args.sample_num)
+        test_data = SeqRecDataset(args, mode="test", sample_num=args.sample_num, tokenizer=tokenizer)
         # test_data = SeqRecTestDataset(args, sample_num=args.sample_num)
     elif args.test_task.lower() == "itemsearch":
         test_data = ItemSearchDataset(args, mode="test", sample_num=args.sample_num)
@@ -197,7 +213,7 @@ def load_test_dataset(args):
     elif args.test_task.lower() == "sagecotseqrec":
         test_data = SageCoTSeqRecDataset(args, mode="test", sample_num=args.sample_num)
     elif args.test_task.lower() == "dummycotseqrec":
-        test_data = DummyCoTSeqRecDataset(args, mode="test", sample_num=args.sample_num)
+        test_data = DummyCoTSeqRecDataset(args, mode="test", sample_num=args.sample_num, tokenizer=tokenizer)
     else:
         raise NotImplementedError
 
@@ -211,19 +227,8 @@ def load_json(file):
 
 
 def parse_output_semantic_id(content):
-    after_think = content.split('</think>', 1)[-1]
-
-    pattern = r'(<a_\d+><b_\d+><c_\d+><d_\d+>)'
-    matches = re.findall(pattern, after_think)
-    # return a list of semantic IDs
-    return matches
-
-
-def is_valid_reasoning_format(s):
-    pattern = r"""^
-        <think>.*?</think>
-        \s*
-        (<a_\d+><b_\d+><c_\d+><d_\d+>)
-        \s*$
-    """
-    return re.match(pattern, s, re.DOTALL | re.VERBOSE) is not None
+    if '<think>' in content and '</think>' in content:
+        after_think = content.split('</think>', 1)[-1]
+        return after_think
+    else:
+        return ''

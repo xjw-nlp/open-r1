@@ -4,8 +4,16 @@ def get_topk_results(predictions, scores, targets, k, all_items=None):
     results = []
     B = len(targets)
     predictions = [_.split("Response:")[-1] for _ in predictions]
+    # address possibly existing CoT
+    if '</think>' in predictions[0]:
+        print('clean CoT')
+        predictions = [_.split("</think>")[-1] for _ in predictions]
     predictions = [_.strip().replace(" ","") for _ in predictions]
-
+    # processing thinking processing in targets
+    if '</think>' in targets[0]:
+        targets = [_.split("</think>")[-1].strip() for _ in targets]
+    print(predictions)
+    print(targets[0] in predictions)
     if all_items is not None:
         for i, seq in enumerate(predictions):
             if seq not in all_items:

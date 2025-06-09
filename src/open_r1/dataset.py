@@ -32,6 +32,7 @@ class BaseDataset(Dataset):
         self.new_tokens = None
         self.allowed_tokens = None
         self.all_items = None
+        self.use_chat_template = args.use_chat_template
 
     def _load_data(self):
         with open(os.path.join(self.data_path, self.dataset + self.index_file), 'r') as f:
@@ -88,14 +89,14 @@ class BaseDataset(Dataset):
 
 class SeqRecDataset(BaseDataset):
     def __init__(self, args, mode="train",
-                 prompt_sample_num=1, prompt_id=0, sample_num=-1):
+                 prompt_sample_num=1, prompt_id=0, sample_num=-1, tokenizer=None):
         super().__init__(args)
-
         self.mode = mode
         self.prompt_sample_num = prompt_sample_num
         self.prompt_id = prompt_id
         self.sample_num = sample_num
         self.prompts = all_prompt["seqrec"]
+        self.tokenizer = tokenizer
         # load data
         self._load_data()
         self._remap_items()
@@ -237,8 +238,20 @@ class SeqRecDataset(BaseDataset):
         instruction = prompt["instruction"].format(**data)
         response = prompt["response"].format(**data)
 
-        input = sft_prompt.format(instruction = instruction, response = "")
-        output = sft_prompt.format(instruction = instruction, response = response)
+        if self.use_chat_template:
+            messages = [
+                {"role": "user", "content": instruction},
+            ]
+            input = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False # Switches between thinking and non-thinking modes. Default is True.
+            )
+            output = input + response.strip()
+        else:
+            input = sft_prompt.format(instruction = instruction, response = "")
+            output = sft_prompt.format(instruction = instruction, response = response)
 
         if self.mode == 'test':
             return input, response
@@ -265,8 +278,193 @@ class SeqRecDataset(BaseDataset):
 
         # print({"input": input, "output": output})
 
-        return dict(input_ids=input, labels=output)
+        return dict(input_ids=input, labels=output, task_type='no_think')
+    
 
+class NextKSeqRecDataset(BaseDataset):
+    def __init__(self, args, mode="train",
+                 prompt_sample_num=1, prompt_id=0, sample_num=-1, max_k=4):
+        super().__init__(args)
+
+        self.mode = mode
+        self.prompt_sample_num = prompt_sample_num
+        self.prompt_id = prompt_id
+        self.sample_num = sample_num
+        self.prompts = all_prompt["next_k_seqrec"]
+        self.max_k = max_k
+        # load data
+        self._load_data()
+        self._remap_items()
+        
+        # load data
+        if self.mode == 'train':
+            self.inter_data = self._process_train_data()
+        elif self.mode == 'valid':
+            self.sample_valid = args.sample_valid
+            self.valid_prompt_id = args.valid_prompt_id
+            self.inter_data = self._process_valid_data()
+            self._construct_valid_text()
+        elif self.mode == 'test':
+            self.inter_data = self._process_test_data()
+        else:
+            raise NotImplementedError
+        
+    def get_new_tokens(self, new_tokens=None):
+        if new_tokens is not None:
+            self.new_tokens = new_tokens
+            return self.new_tokens
+
+        self.new_tokens = set()
+        for index in self.indices.values():
+            for token in index:
+                self.new_tokens.add(token)
+        self.new_tokens = sorted(list(self.new_tokens))
+        return self.new_tokens
+
+    def _load_data(self):
+
+        with open(os.path.join(self.data_path, self.dataset + ".inter.json"), 'r') as f:
+            self.inters = json.load(f)
+        with open(os.path.join(self.data_path, self.dataset + self.index_file), 'r') as f:
+            self.indices = json.load(f)
+
+    def _remap_items(self):
+
+        self.remapped_inters = dict()
+        for uid, items in self.inters.items():
+            new_items = ["".join(self.indices[str(i)]) for i in items]
+            self.remapped_inters[uid] = new_items
+
+    def _process_train_data(self):
+        inter_data = []
+        for uid  in self.remapped_inters:
+            items = self.remapped_inters[uid][:-2]
+            for i in range(1, len(items) - 1):
+                one_data = dict()
+                # one_data["user"] = uid
+                labels = list(set([x.strip() for x in items[i: i + self.max_k]]))
+                if len(labels) < 2: continue
+                one_data['next_k'] = len(labels)
+                one_data["items"] = ' '.join(labels)
+                history = items[:i]
+                if self.max_his_len > 0:
+                    history = history[-self.max_his_len:]
+                if self.add_prefix:
+                    history = [str(k+1) + ". " + item_idx for k, item_idx in enumerate(history)]
+                one_data["inters"] = self.his_sep.join(history)
+                inter_data.append(one_data)
+        return inter_data
+    
+    def _process_valid_data(self):
+        inter_data = []
+        for uid  in self.remapped_inters:
+            items = self.remapped_inters[uid][-self.max_his_len - self.max_k - 1: -1]
+            for i in range(self.max_his_len, len(items) - 1):
+                one_data = dict()
+                # one_data["user"] = uid
+                labels = list(set([x.strip() for x in items[i: i + self.max_k]]))
+                if len(labels) < 2: continue
+                one_data['next_k'] = len(labels)
+                one_data["items"] = ' '.join(labels)
+                history = items[:i]
+                if self.max_his_len > 0:
+                    history = history[-self.max_his_len:]
+                if self.add_prefix:
+                    history = [str(k+1) + ". " + item_idx for k, item_idx in enumerate(history)]
+                one_data["inters"] = self.his_sep.join(history)
+                inter_data.append(one_data)
+        return inter_data
+
+    def _process_test_data(self):
+        inter_data = []
+        for uid  in self.remapped_inters:
+            items = self.remapped_inters[uid][-self.max_his_len - self.max_k:]
+            for i in range(self.max_his_len, len(items) - 1):
+                one_data = dict()
+                # one_data["user"] = uid
+                labels = list(set([x.strip() for x in items[i: i + self.max_k]]))
+                if len(labels) < 2: continue
+                one_data['next_k'] = len(labels)
+                one_data["items"] = ' '.join(labels)
+                history = items[:i]
+                if self.max_his_len > 0:
+                    history = history[-self.max_his_len:]
+                if self.add_prefix:
+                    history = [str(k+1) + ". " + item_idx for k, item_idx in enumerate(history)]
+                one_data["inters"] = self.his_sep.join(history)
+                inter_data.append(one_data)
+
+        if self.sample_num > 0:
+            all_inter_idx = range(len(inter_data))
+            sample_idx = np.random.choice(all_inter_idx, self.sample_num, replace=False)
+            inter_data = np.array(inter_data)[sample_idx].tolist()
+
+        return inter_data
+
+    def set_prompt(self, prompt_id):
+
+        self.prompt_id = prompt_id
+
+    def __len__(self):
+        if self.mode == 'train':
+            return len(self.inter_data) * self.prompt_sample_num
+        elif self.mode == 'valid':
+            return len(self.valid_text_data)
+        elif self.mode == 'test':
+            return len(self.inter_data)
+        else:
+            raise NotImplementedError
+                    
+    def _construct_valid_text(self):
+        self.valid_text_data = []
+        if self.sample_valid:
+            all_prompt_ids = range(len(self.prompts))
+            for i in range(len(self.inter_data)):
+                d = self.inter_data[i]
+                prompt_ids = np.random.choice(all_prompt_ids, self.prompt_sample_num, replace=False)
+                for prompt_id in prompt_ids:
+                    prompt = self.prompts[prompt_id]
+                    input, output = self._get_text_data(d, prompt)
+                    self.valid_text_data.append({"input_ids": input, "labels": output})
+        else:
+            self.prompt_sample_num = 1
+            prompt = self.prompts[self.valid_prompt_id]
+            for i in range(len(self.inter_data)):
+                d = self.inter_data[i]
+                input, output = self._get_text_data(d, prompt)
+                self.valid_text_data.append({"input_ids": input, "labels": output})
+
+    def _get_text_data(self, data, prompt):
+
+        instruction = prompt["instruction"].format(**data)
+        response = prompt["response"].format(**data)
+
+        input = sft_prompt.format(instruction = instruction, response = "")
+        output = sft_prompt.format(instruction = instruction, response = response)
+
+        if self.mode == 'test':
+            return input, response
+
+        return input, output
+
+    def __getitem__(self, index):
+        if self.mode == 'valid':
+            return self.valid_text_data[index]
+
+        idx = index // self.prompt_sample_num
+        d = self.inter_data[idx]
+        # print(index, idx)
+
+        if self.mode == 'train':
+            prompt_id = random.randint(0, len(self.prompts) - 1)
+        elif self.mode == 'test':
+            prompt_id = self.prompt_id
+
+        prompt = self.prompts[prompt_id]
+
+        input, output = self._get_text_data(d, prompt)
+        return dict(input_ids=input, labels=output)
+    
 
 class FusionSeqRecDataset(BaseDataset):
     def __init__(self, args, mode="train",
@@ -722,13 +920,14 @@ class PreferenceObtainDataset(BaseDataset):
 
 class SageCoTSeqRecDataset(BaseDataset):
     def __init__(self, args, mode="train",
-                 prompt_sample_num=1, prompt_id=0, sample_num=-1):
+                 prompt_sample_num=1, prompt_id=0, sample_num=-1, tokenizer=None):
         super().__init__(args)
+        self.tokenizer = tokenizer
         self.mode = mode
         self.prompt_sample_num = prompt_sample_num
         self.prompt_id = prompt_id
         self.sample_num = sample_num
-        self.prompts = all_prompt["cotseqrec"]
+        self.prompts = all_prompt["sagecotseqrec"]
         # load data
         self._load_data()
 
@@ -750,7 +949,12 @@ class SageCoTSeqRecDataset(BaseDataset):
             self.indices = json.load(f)
         with open(os.path.join(self.data_path, self.dataset + ".item.json"), 'r') as f:
             self.item_feat = json.load(f)
-        self.cot_inters = load_dataset(os.path.join(self.data_path, self.dataset + "_reasoning"))['train']
+        cot_inters = load_dataset(os.path.join(self.data_path, self.dataset + "_reasoning"))['train'].train_test_split(test_size=0.1)
+        if self.mode.strip() == 'train':
+            self.cot_inters = cot_inters['train']
+        else:
+            self.cot_inters = cot_inters['test']
+        print(self.cot_inters)
 
     def set_prompt(self, prompt_id):
         self.prompt_id = prompt_id
@@ -759,18 +963,32 @@ class SageCoTSeqRecDataset(BaseDataset):
         return len(self.cot_inters) * self.prompt_sample_num
 
     def _remap_items(self, inter):
-        text_inter = []
-        semantic_inter = []
+        text_inters = []
+        semantic_inters = []
+        full_inters = []
         for iid in inter:
-            semantic_inter.append(''.join(self.indices[str(iid)]))
-            text_inter.append("\"" + self.item_feat[str(iid)]['title'].strip().strip(".!?,;:`") + "\"")
-        return ', '.join(semantic_inter), ', '.join(text_inter)
+            semantic_inters.append(''.join(self.indices[str(iid)]))
+            text_inters.append(self.item_feat[str(iid)]['title'].strip().strip(".!?,;:`"))
+            full_inters.append((text_inters[-1], semantic_inters[-1]))
+        return ', '.join(semantic_inters), ', '.join(text_inters), json.dumps(full_inters)
 
     def _get_text_data(self, data, prompt):
         instruction = prompt["instruction"].format(**data)
         response = prompt["response"].format(**data)
-        input = sft_prompt.format(instruction=instruction, response="")
-        output = sft_prompt.format(instruction=instruction, response=response)
+        if self.use_chat_template:
+            messages = [
+                {"role": "user", "content": instruction},
+            ]
+            input = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=True # Switches between thinking and non-thinking modes. Default is True.
+            )
+            output = input + response.strip()
+        else:
+            input = sft_prompt.format(instruction=instruction, response="")
+            output = sft_prompt.format(instruction=instruction, response=response)
         if self.mode == 'test':
             return input, response
         return input, output
@@ -779,32 +997,33 @@ class SageCoTSeqRecDataset(BaseDataset):
         idx = index // self.prompt_sample_num
         raw_data = self.cot_inters[idx]
         inter = raw_data['his_inter_ids']
-        semantic_inter, text_inter = self._remap_items(inter)
+        semantic_inters, text_inters, full_inters = self._remap_items(inter)
         tgt_semantic_id = ''.join(self.indices[str(raw_data['tgt_item_id'])])
-        if 'summary_content' in raw_data and len(raw_data['summary_content']) > 10:
-            reasoning = raw_data['summary_content']
-        else:
-            reasoning = raw_data['reasoning_content']
+        reasoning = raw_data['reasoning']
         d = {
-            'semantic_inter': semantic_inter,
-            'text_inter': text_inter,
+            'semantic_inters': semantic_inters,
+            'text_inters': text_inters,
+            'full_inters': full_inters,
             'reasoning': reasoning,
             'tgt_semantic_id': tgt_semantic_id,
         }
 
         if self.mode == 'train':
             prompt_id = random.randint(0, len(self.prompts) - 1)
-        elif self.mode == 'test':
+        else:
             prompt_id = self.prompt_id
 
         prompt = self.prompts[prompt_id]
         input, output = self._get_text_data(d, prompt)
-        return dict(input_ids=input, labels=output)
+        # print('debug')
+        # print('input:', input)
+        # print('output:', output)
+        return dict(input_ids=input, labels=output, task_type='think')
     
 
 class DummyCoTSeqRecDataset(BaseDataset):
     def __init__(self, args, mode="train",
-                 prompt_sample_num=1, prompt_id=0, sample_num=-1):
+                 prompt_sample_num=1, prompt_id=0, sample_num=-1, tokenizer=None):
         super().__init__(args)
 
         self.mode = mode
@@ -813,7 +1032,7 @@ class DummyCoTSeqRecDataset(BaseDataset):
         self.sample_num = sample_num
 
         self.prompts = all_prompt["dummycotseqrec"]
-
+        self.tokenizer = tokenizer
         # load data
         self._load_data()
         # self._remap_items()
@@ -982,9 +1201,20 @@ class DummyCoTSeqRecDataset(BaseDataset):
     def _get_text_data(self, data, prompt):
         instruction = prompt["instruction"].format(**data)
         response = prompt["response"].format(**data)
-
-        input = sft_prompt.format(instruction=instruction, response="")
-        output = sft_prompt.format(instruction=instruction, response=response)
+        if self.use_chat_template:
+            messages = [
+                {"role": "user", "content": instruction},
+            ]
+            input = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=True # Switches between thinking and non-thinking modes. Default is True.
+            )
+            output = input + response.strip()
+        else:
+            input = sft_prompt.format(instruction=instruction, response="")
+            output = sft_prompt.format(instruction=instruction, response=response)
 
         if self.mode == 'test':
             return input, response
@@ -1006,8 +1236,191 @@ class DummyCoTSeqRecDataset(BaseDataset):
         prompt = self.prompts[prompt_id]
 
         input, output = self._get_text_data(d, prompt)
-        return dict(input_ids=input, labels=output)
+        return dict(input_ids=input, labels=output, task_type='think')
+    
 
+class DirectSeqRecDataset(BaseDataset):
+    def __init__(self, args, mode="train",
+                 prompt_sample_num=1, prompt_id=0, sample_num=-1, tokenizer=None):
+        super().__init__(args)
+        self.mode = mode
+        self.prompt_sample_num = prompt_sample_num
+        self.prompt_id = prompt_id
+        self.sample_num = sample_num
+        self.prompts = all_prompt["directseqrec"]
+        self.tokenizer = tokenizer
+        # load data
+        self._load_data()
+        self._remap_items()
+        
+        # load data
+        if self.mode == 'train':
+            self.inter_data = self._process_train_data()
+        elif self.mode == 'valid':
+            self.sample_valid = args.sample_valid
+            self.valid_prompt_id = args.valid_prompt_id
+            self.inter_data = self._process_valid_data()
+            self._construct_valid_text()
+        elif self.mode == 'test':
+            self.inter_data = self._process_test_data()
+        else:
+            raise NotImplementedError
+        
+    def get_new_tokens(self, new_tokens=None):
+        if new_tokens is not None:
+            self.new_tokens = new_tokens
+            return self.new_tokens
+
+        self.new_tokens = set()
+        for index in self.indices.values():
+            for token in index:
+                self.new_tokens.add(token)
+        self.new_tokens = sorted(list(self.new_tokens))
+        return self.new_tokens
+
+    def _load_data(self):
+
+        with open(os.path.join(self.data_path, self.dataset + ".inter.json"), 'r') as f:
+            self.inters = json.load(f)
+        with open(os.path.join(self.data_path, self.dataset + self.index_file), 'r') as f:
+            self.indices = json.load(f)
+        with open(os.path.join(self.data_path, self.dataset + ".item.json"), 'r') as f:
+            self.item_feat = json.load(f)
+
+    def _remap_items(self):
+        self.remapped_inters = dict()
+        for uid, items in self.inters.items():
+            new_items = [[self.item_feat[str(i)]["title"].strip().strip(".!?,;:`"), "".join(self.indices[str(i)])] for i in items]
+            self.remapped_inters[uid] = new_items
+
+    def _process_train_data(self):
+        inter_data = []
+        for uid  in self.remapped_inters:
+            items = self.remapped_inters[uid][:-2]
+            for i in range(1, len(items)):
+                one_data = dict()
+                # one_data["user"] = uid
+                one_data["item"] = items[i][-1]
+                history = items[:i]
+                if self.max_his_len > 0:
+                    history = history[-self.max_his_len:]
+                one_data["inters"] = json.dumps(history)
+                inter_data.append(one_data)
+        if self.sample_num > 0:
+            all_inter_idx = range(len(inter_data))
+            sample_idx = np.random.choice(all_inter_idx, self.sample_num, replace=False)
+            inter_data = np.array(inter_data)[sample_idx].tolist()
+        return inter_data
+    
+    def _process_valid_data(self):
+        inter_data = []
+        for uid in self.remapped_inters:
+            items = self.remapped_inters[uid]
+            one_data = dict()
+            # one_data["user"] = uid
+            one_data["item"] = items[-2][-1]
+            history = items[:-2]
+            if self.max_his_len > 0:
+                history = history[-self.max_his_len:]
+            one_data["inters"] = json.dumps(history)
+            inter_data.append(one_data)
+        return inter_data
+
+    def _process_test_data(self):
+        inter_data = []
+        for uid in self.remapped_inters:
+            items = self.remapped_inters[uid]
+            one_data = dict()
+            # one_data["user"] = uid
+            one_data["item"] = items[-1][-1]
+            history = items[:-1]
+            if self.max_his_len > 0:
+                history = history[-self.max_his_len:]
+            one_data["inters"] = json.dumps(history)
+            inter_data.append(one_data)
+
+        if self.sample_num > 0:
+            all_inter_idx = range(len(inter_data))
+            sample_idx = np.random.choice(all_inter_idx, self.sample_num, replace=False)
+            inter_data = np.array(inter_data)[sample_idx].tolist()
+
+        return inter_data
+
+    def set_prompt(self, prompt_id):
+        self.prompt_id = prompt_id
+
+    def __len__(self):
+        if self.mode == 'train':
+            return len(self.inter_data) * self.prompt_sample_num
+        elif self.mode == 'valid':
+            return len(self.valid_text_data)
+        elif self.mode == 'test':
+            return len(self.inter_data)
+        else:
+            raise NotImplementedError
+                    
+    def _construct_valid_text(self):
+        self.valid_text_data = []
+        if self.sample_valid:
+            all_prompt_ids = range(len(self.prompts))
+            for i in range(len(self.inter_data)):
+                d = self.inter_data[i]
+                prompt_ids = np.random.choice(all_prompt_ids, self.prompt_sample_num, replace=False)
+                for prompt_id in prompt_ids:
+                    prompt = self.prompts[prompt_id]
+                    input, output = self._get_text_data(d, prompt)
+                    self.valid_text_data.append({"input_ids": input, "labels": output})
+        else:
+            self.prompt_sample_num = 1
+            prompt = self.prompts[self.valid_prompt_id]
+            for i in range(len(self.inter_data)):
+                d = self.inter_data[i]
+                input, output = self._get_text_data(d, prompt)
+                self.valid_text_data.append({"input_ids": input, "labels": output})
+
+    def _get_text_data(self, data, prompt):
+        instruction = prompt["instruction"].format(**data)
+        response = prompt["response"].format(**data)
+        if self.use_chat_template:
+            messages = [
+                {"role": "user", "content": instruction},
+            ]
+            input = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False # Switches between thinking and non-thinking modes. Default is True.
+            )
+            output = input + response.strip()
+        else:
+            input = sft_prompt.format(instruction = instruction, response = "")
+            output = sft_prompt.format(instruction = instruction, response = response)
+
+        if self.mode == 'test':
+            return input, response
+
+        return input, output
+
+    def __getitem__(self, index):
+        if self.mode == 'valid':
+            return self.valid_text_data[index]
+
+        idx = index // self.prompt_sample_num
+        d = self.inter_data[idx]
+        # print(index, idx)
+
+        if self.mode == 'train':
+            prompt_id = random.randint(0, len(self.prompts) - 1)
+        elif self.mode == 'test':
+            prompt_id = self.prompt_id
+
+        prompt = self.prompts[prompt_id]
+
+        input, output = self._get_text_data(d, prompt)
+        # print('[debug]')
+        # print({"input": input, "output": output})
+        return dict(input_ids=input, labels=output, task_type='no_think')
+    
 
 class SeqRecTestDataset(BaseDataset):
 

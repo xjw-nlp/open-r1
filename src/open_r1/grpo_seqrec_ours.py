@@ -41,6 +41,7 @@ from rewards import (
     tag_count_reward,
     seqrec_accuracy_reward,
     seqrec_format_reward,
+    seqrec_cosine_sim_reward,
 )
 from open_r1.utils import get_tokenizer
 from open_r1.utils.callbacks import get_callbacks
@@ -49,6 +50,8 @@ from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
 from seqrec_grpo_trainer_ours import SeqRecGRPOTrainer
 
 from prompt import GRPO_SEQREC_TEMPLATES, grpo_prompt
+
+from utils.model_utils import get_model
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +143,10 @@ class SeqRecGRPOScriptArguments(GRPOScriptArguments):
         default=20,
         metadata={"help": "Maximum number of recent interacted item"}
     )
+    num_next_k: int = field(
+        default=1,
+        metadata={"help": "Max number of predicted item for next K task"}
+    )
     his_sep: str = field(
         default=', ',
         metadata={"help": "The separator between items"},
@@ -147,6 +154,12 @@ class SeqRecGRPOScriptArguments(GRPOScriptArguments):
     use_conversation: bool = field(
         default=False,
         metadata={"help": "Whether to use the conversational format for prompting"}
+    )
+    task_types: list[str] = field(
+        default_factory=lambda: ["reason_next_1"],
+        metadata={
+            "help": "The types of tasks for optimization"
+        },
     )
 
 
@@ -195,11 +208,19 @@ def main(script_args, training_args, model_args):
         index_mapping = json.load(f)
     with open(os.path.join(seqrec_data_path, script_args.dataset + script_args.item_file)) as f:
         item_mapping = json.load(f)
+    all_item_ids = list(item_mapping.keys())
 
     ################
     # Load tokenizer
     ################
     tokenizer = get_tokenizer(model_args, training_args)
+
+    ##############
+    # Load model #
+    ##############
+    logger.info("*** Loading model ***")
+    model = get_model(model_args, training_args)
+
 
     # Get reward functions
     REWARD_FUNCS_REGISTRY = {
@@ -223,8 +244,11 @@ def main(script_args, training_args, model_args):
         "tag_count": tag_count_reward,
         "seqrec_accuracy": seqrec_accuracy_reward,
         "seqrec_format": seqrec_format_reward,
+        "seqrec_cosine_sim": seqrec_cosine_sim_reward,
     }
     reward_funcs = [REWARD_FUNCS_REGISTRY[func] for func in script_args.reward_funcs]
+    valid_seqrec_task_types = list(set(script_args.task_types) & set(list(GRPO_SEQREC_TEMPLATES.keys())))
+    print(f'Valid Tasks: {valid_seqrec_task_types}')
     # Format into conversation
     def convert_one_seqrec_prompt(src_data):
         his_inter_ids = src_data['his_inter_ids']
@@ -242,60 +266,94 @@ def main(script_args, training_args, model_args):
         inter_titles = ["\"" + item_mapping[str(j)]["title"].strip().strip(".!?,;:`") + "\"" for j in history]
         one_data["semantic_inter"] = script_args.his_sep.join(inters)
         one_data["text_inter"] = script_args.his_sep.join(inter_titles)
+        full_inters = []
+        for i in range(len(inters)):
+            full_inters.append((inter_titles[i], inters[i]))
+        one_data['full_inters'] = json.dumps(full_inters)
+        # construct candidates for the multiple choice task
+        cand_item_ids = random.sample(all_item_ids, 5)
+        cand_item_ids.append(str(tgt_item_id))
+        cand_item_ids = set(cand_item_ids)
+        cand_items = []
+        for i, x in enumerate(cand_item_ids, start=1):
+            cand_items.append(f'{i}. [{item_mapping[str(x)]["title"].strip().strip(".!?,;:`")}, {"".join(index_mapping[str(x)])}]')
+        one_data['cand_item_ids'] = cand_item_ids
+        one_data['cand_items'] = '\n'.join(cand_items)
         return one_data
     
+    def make_conversation(example):
+        prompt = []
+        if training_args.system_prompt is not None:
+            prompt.append({"role": "system", "content": training_args.system_prompt})
+        sample_info = convert_one_seqrec_prompt(example)
+        seqrec_task_type = random.choice(list(GRPO_SEQREC_TEMPLATES.keys()))
+        template = random.choice(GRPO_SEQREC_TEMPLATES[seqrec_task_type])
+        instruction = template['instruction'].format(**sample_info)
+        response = template['response'].format(**sample_info)
+        target = sample_info['item_semantic_id']
+        prompt.append({"role": "user", "content": instruction})
+        return {"prompt": prompt, "response": response, "target": target, "task_type": seqrec_task_type}
+   
+    def make_prompt(example):
+        sample_info = convert_one_seqrec_prompt(example)
+        seqrec_task_type = random.choice(valid_seqrec_task_types)
+        if 'next_k' in seqrec_task_type:
+            next_k = script_args.num_next_k
+            sample_info['next_k'] = next_k
+        else:
+            next_k = 1
+        
+        template = random.choice(GRPO_SEQREC_TEMPLATES[seqrec_task_type])
+        instruction = template['instruction'].format(**sample_info)
+        response = template['response'].format(**sample_info)
+        target = sample_info['item_semantic_id']
+        messages = [
+            {"role": "user", "content": instruction},
+        ]
+        enable_thinking = False
+        if 'reason' in seqrec_task_type:
+            enable_thinking = True 
+        prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=enable_thinking # Switches between thinking and non-thinking modes. Default is True.
+        )
+        sample_info.update({"prompt": prompt, "response": response, "target": target, "task_type": seqrec_task_type, "next_k": next_k})
+        return sample_info
+
     if script_args.use_conversation:
-        def make_conversation(example):
-            prompt = []
-            if training_args.system_prompt is not None:
-                prompt.append({"role": "system", "content": training_args.system_prompt})
-            sample_info = convert_one_seqrec_prompt(example)
-            seqrec_task_type = random.choice(list(GRPO_SEQREC_TEMPLATES.keys()))
-            template = random.choice(GRPO_SEQREC_TEMPLATES[seqrec_task_type])
-            instruction = template['instruction'].format(**sample_info)
-            response = template['response'].format(**sample_info)
-            target = sample_info['item_semantic_id']
-            prompt.append({"role": "user", "content": instruction})
-            return {"prompt": prompt, "response": response, "target": target, "task_type": seqrec_task_type}
+        dataset = dataset.map(make_conversation)
     else:
-        def make_conversation(example):
-            sample_info = convert_one_seqrec_prompt(example)
-            seqrec_task_type = random.choice(list(GRPO_SEQREC_TEMPLATES.keys()))
-            template = random.choice(GRPO_SEQREC_TEMPLATES[seqrec_task_type])
-            instruction = template['instruction'].format(**sample_info)
-            response = template['response'].format(**sample_info)
-            target = sample_info['item_semantic_id']
-            prompt = grpo_prompt.format(instruction=instruction, response='')
-            return {"prompt": prompt, "response": response, "target": target, "task_type": seqrec_task_type}
-    
-    dataset = dataset.map(make_conversation)
+        dataset = dataset.map(make_prompt)
+
     # breakpoint()
     for split in dataset:
         if "messages" in dataset[split].column_names:
             dataset[split] = dataset[split].remove_columns("messages")
 
-    logger.info("*** Initializing model kwargs ***")
-    torch_dtype = (
-        model_args.torch_dtype if model_args.torch_dtype in ["auto", None] else getattr(torch, model_args.torch_dtype)
-    )
-    model_kwargs = dict(
-        revision=model_args.model_revision,
-        trust_remote_code=model_args.trust_remote_code,
-        attn_implementation=model_args.attn_implementation,
-        torch_dtype=torch_dtype,
-        use_cache=False if training_args.gradient_checkpointing else True,
-    )
-    training_args.model_init_kwargs = model_kwargs
+    # logger.info("*** Initializing model kwargs ***")
+    # torch_dtype = (
+    #     model_args.torch_dtype if model_args.torch_dtype in ["auto", None] else getattr(torch, model_args.torch_dtype)
+    # )
+    # model_kwargs = dict(
+    #     revision=model_args.model_revision,
+    #     trust_remote_code=model_args.trust_remote_code,
+    #     attn_implementation=model_args.attn_implementation,
+    #     torch_dtype=torch_dtype,
+    #     use_cache=False if training_args.gradient_checkpointing else True,
+    # )
+    # training_args.model_init_kwargs = model_kwargs
 
     #############################
     # Initialize the GRPO trainer
     #############################
     trainer = SeqRecGRPOTrainer(
-        model=model_args.model_name_or_path,
+        model=model,
         reward_funcs=reward_funcs,
         args=training_args,
         train_dataset=dataset[script_args.dataset_train_split],
-        eval_dataset=dataset[script_args.dataset_test_split] if training_args.eval_strategy != "no" else None,
+        eval_dataset=(dataset[script_args.dataset_test_split] if training_args.eval_strategy != "no" else None),
         peft_config=get_peft_config(model_args),
         callbacks=get_callbacks(training_args, model_args),
         processing_class=tokenizer,
@@ -356,5 +414,5 @@ def main(script_args, training_args, model_args):
 if __name__ == "__main__":
     parser = TrlParser((SeqRecGRPOScriptArguments, GRPOConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
-    # breakpoint()
+    print(script_args.task_types)
     main(script_args, training_args, model_args)

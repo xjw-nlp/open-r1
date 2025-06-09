@@ -6,7 +6,10 @@ import tempfile
 from typing import Any, Dict, Optional, Tuple
 
 from dotenv import load_dotenv
-from open_r1.utils.import_utils import is_morph_available
+try:
+    from open_r1.utils.import_utils import is_morph_available
+except:
+    from utils.import_utils import is_morph_available
 
 
 # Replace direct imports with conditional imports

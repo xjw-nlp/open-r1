@@ -19,7 +19,7 @@ import abc
 import asyncio
 from typing import List, Optional
 
-from ..utils import is_e2b_available, is_morph_available
+from utils import is_e2b_available, is_morph_available
 
 
 if is_e2b_available():

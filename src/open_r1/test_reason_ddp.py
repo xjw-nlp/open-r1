@@ -113,6 +113,9 @@ def test_ddp(args):
 
     metrics = args.metrics.split(",")
     all_prompt_results = []
+    think_start_token_id = tokenizer('<think>')['input_ids'][0]
+    think_end_token_id = tokenizer('</think>')['input_ids'][0]
+    response_final_token_id = tokenizer('Response:')['input_ids'][-1]
     with torch.no_grad():
 
         for prompt_id in prompt_ids:
@@ -130,12 +133,40 @@ def test_ddp(args):
                 bs = len(targets)
                 num_beams = args.num_beams
                 max_new_tokens = args.max_new_tokens
+                # reason a single CoT
+                output = model.module.generate(
+                    input_ids=inputs["input_ids"],
+                    attention_mask=inputs["attention_mask"],
+                    max_new_tokens=max_new_tokens,
+                    # prefix_allowed_tokens_fn=prefix_allowed_tokens,
+                    num_beams=1,
+                    output_scores=True,
+                    return_dict_in_generate=True,
+                    do_sample=True,
+                    early_stopping=True,
+                    pad_token_id=tokenizer.eos_token_id,
+                )
+                # breakpoint()
+                input_seq_len = inputs["input_ids"].shape[-1]
+                output_ids = output["sequences"]
+                old_input_ids = inputs["input_ids"]
+                old_attention_mask = inputs["attention_mask"]
+                new_input_ids = output_ids
+                output = tokenizer.batch_decode(
+                    new_input_ids, skip_special_tokens=True
+                )
+                print('CoT;', output)
+                new_input_ids = output_ids[:, :-6]
+                new_attention_mask = torch.concat((old_attention_mask,
+                    torch.ones(old_attention_mask.shape[0], new_input_ids.shape[1] - old_input_ids.shape[1], dtype=old_attention_mask.dtype, device=old_attention_mask.device)), dim=1)
+                if new_attention_mask.shape != new_input_ids.shape:
+                    raise ValueError('Invalid attention mask')
                 while True:
                     try:
                         output = model.module.generate(
-                            input_ids=inputs["input_ids"],
-                            attention_mask=inputs["attention_mask"],
-                            max_new_tokens=max_new_tokens,
+                            input_ids=new_input_ids,
+                            attention_mask=new_attention_mask,
+                            max_new_tokens=10,
                             # prefix_allowed_tokens_fn=prefix_allowed_tokens,
                             num_beams=num_beams,
                             num_return_sequences=num_beams,

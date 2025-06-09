@@ -24,17 +24,29 @@ from typing import Callable, Dict, Optional
 
 from latex2sympy2_extended import NormalizationConfig
 from math_verify import LatexExtractionConfig, parse, verify
-from seqrec_utils import parse_output_semantic_id, is_valid_reasoning_format
+from seqrec_utils import parse_output_semantic_id
 
-from .utils.code_providers import get_provider
-from .utils.ioi import (
-    SubtaskResult,
-    add_includes,
-    get_morph_client_from_env,
-    get_piston_client_from_env,
-    score_subtask,
-)
+# from utils.code_providers import get_provider
+# from utils.ioi import (
+#     SubtaskResult,
+#     add_includes,
+#     get_morph_client_from_env,
+#     get_piston_client_from_env,
+#     score_subtask,
+# )
 
+import torch
+import numpy as np
+
+
+print("Start Loading Mapping")
+id2embed = np.load('/apdcephfs_qy3/share_1565115/jonxie/workspace/open-r1/data/Instruments/Instruments.emb-e5-mistral-7b-instruct-td.npy')
+with open('/apdcephfs_qy3/share_1565115/jonxie/workspace/open-r1/data/Instruments/Instruments.index.20250414.json', 'r') as f:
+    id2semantic = json.load(f)
+semantic2id = dict()
+for k, v in id2semantic.items():
+    semantic2id[''.join(v)] = int(k)
+print("End Loading")
 
 def seqrec_accuracy_reward(completions, **kwargs):
     """Reward function that checks if the completion is the same as the ground truth."""
@@ -45,13 +57,40 @@ def seqrec_accuracy_reward(completions, **kwargs):
         else:
             contents.append(completion)
     targets = kwargs['target']
+    task_types = kwargs['task_type']
     rewards = []
-    for content, target in zip(contents, targets):
-        model_output = parse_output_semantic_id(content)
-        if model_output:
-            reward = float(model_output[-1] == target)
-        else:
+    # num_cands_per_sample = len(kwargs['prompts']) // len(set(kwargs['prompts'])) 
+    for content, target, task_type in zip(contents, targets, task_types):
+        if task_type == 'direct_next_1':
+            model_output = content.strip()
+            reward = float(model_output.strip() == target.strip())
+        elif task_type == 'multiple_choices':
+            model_output = content.strip()
+            reward = float(model_output.strip() == target.strip())
+        elif task_type == 'reason_next_1':
+            model_output = parse_output_semantic_id(content)
+            reward = float(model_output.strip() == target.strip())
+        elif task_type == 'reason_next_k':
+            print(f"Raw Reason Next K Output: {content}")
+            model_output = parse_output_semantic_id(content)
+            model_output = re.findall(r"<a_\d+><b_\d+><c_\d+><d_\d+>", model_output)
+            print(f"Reason Next K Output: {model_output}")
             reward = 0.0
+            if len(model_output) > 1:
+                for i, x in enumerate(model_output, 1):
+                    cur_reward = float(x.strip() == target.strip()) / i
+                    if cur_reward > 0:
+                        reward = cur_reward
+                        break
+        else:
+            NotImplementedError
+        # if reward <= 0:
+        #     print(task_types[0])
+        #     print(kwargs['prompts'][0])
+        #     print('raw output:', content)
+        #     print('output:', model_output)
+        #     print('target:', target)
+        #     print('<>' * 20)
         rewards.append(reward)
     return rewards
 
@@ -66,25 +105,75 @@ def seqrec_format_reward(completions, **kwargs):
             contents.append(completion)
     task_types = kwargs['task_type']
     rewards = []
-    simple_pattern = r"""^
+    direct_next_1_pattern = r"""^
         \s*
         (<a_\d+><b_\d+><c_\d+><d_\d+>)
         \s*$
     """
-    hard_pattern = r"""^
+    reason_next_1_pattern = r"""^
         <think>.*?</think>
         \s*
         (<a_\d+><b_\d+><c_\d+><d_\d+>)
         \s*$
     """
     for content, task_type in zip(contents, task_types):
-        if task_type == 'simple':
-            pattern = simple_pattern
-        elif task_type == 'hard':
-            pattern = hard_pattern
+        if task_type == 'direct_next_1':
+            pattern = direct_next_1_pattern
+        elif task_type == 'multiple_choices':
+            pattern = direct_next_1_pattern
+        elif task_type == 'reason_next_1':
+            pattern = reason_next_1_pattern
+        elif task_type == 'reason_next_k':
+            pattern = reason_next_1_pattern
         else:
             NotImplementedError
         rewards.append(float(re.match(pattern, content, re.DOTALL | re.VERBOSE) is not None))
+        if rewards[-1] <= 0:
+            print('<>' * 20)
+            print(task_type)
+            print(content)
+    return rewards
+
+
+def seqrec_cosine_sim_reward(completions, **kwargs):
+    """Reward function that computes the cosine similarity."""
+    def compute_cosine_sim(pred, tgt, valid_cands=None):
+        global id2embed, semantic2id
+        if id2embed is not None and semantic2id is not None:
+            if (pred in semantic2id) and (valid_cands is None or str(semantic2id[pred]) in valid_cands):
+                pred_emb = id2embed[semantic2id[pred]]
+                tgt_emb = id2embed[semantic2id[tgt]]
+                cos_sim = np.dot(pred_emb, tgt_emb) / (np.linalg.norm(pred_emb) * np.linalg.norm(tgt_emb) + 1e-6)
+            else:
+                cos_sim = -10
+            return cos_sim
+        else:
+            raise ValueError("There are no mappings.")
+    contents = []
+    for completion in completions:
+        if isinstance(completion, list):
+            contents.append(completion[0]["content"])
+        else:
+            contents.append(completion)
+    targets = kwargs['target']
+    task_types = kwargs['task_type']
+    rewards = []
+    # num_cands_per_sample = len(kwargs['prompts']) // len(set(kwargs['prompts'])) 
+    for content, target, task_type in zip(contents, targets, task_types):
+        if task_type == 'direct_next_1':
+            model_output = content.strip()
+            reward = compute_cosine_sim(model_output.strip(), target.strip())
+        elif task_type == 'multiple_choices':
+            model_output = content.strip()
+            reward = compute_cosine_sim(model_output.strip(), target.strip())
+        elif task_type == 'reason_next_1':
+            model_output = parse_output_semantic_id(content)
+            reward = compute_cosine_sim(model_output.strip(), target.strip())
+        elif task_type == 'reason_next_k':
+            reward = 0
+        else:
+            NotImplementedError
+        rewards.append(reward)
     return rewards
 
 
